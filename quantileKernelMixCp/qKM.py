@@ -51,7 +51,7 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
         k += 1
         if (np.sum(indL) + np.sum(indR) == 1):
             lambda_vals[k] = 0
-            print("No points on left or right. Stopping.")
+            #print("No points on left or right. Stopping.")
             break
 
         ### Event 1: Check if a point moves from R,L to Elbow
@@ -141,14 +141,14 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
         #print(f"Delta list is {delta_list}")
         if np.all(delta_list > 0):
             delta = np.inf
-            print("Path stops here.")
+            #print("Path stops here.")
             break
 
         ### Update parameters
         delta = np.max(delta_list[delta_list<0])
         lambda_vals[k] = lambda_vals[k-1] + delta
         if lambda_vals[k] < eps2:
-            print("Descent too small. Stopping.")
+            #print("Descent too small. Stopping.")
             break
         delta_r = 1+delta/lambd
         beta0[k] = 1/delta_r * beta0[k-1] + u0*(1-1/delta_r)
@@ -176,7 +176,7 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
             indE, indL, indR = tmpE2, tmpL2, tmpR2
             #print(f"Observation {istar2} leaves elbow and joins {setstar2}.")
             
-    print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}")
+    #print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}")
 
     result = {
         "beta0": beta0[:k+1],
