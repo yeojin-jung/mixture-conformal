@@ -7,6 +7,9 @@ from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 
+from quantileKernelMixCp.utils import *
+
+
 def kernel(x, y, gamma):
     return rbf_kernel(x,y, gamma=gamma)
 
@@ -86,19 +89,16 @@ def generate_data(N,n,p,p0,K,test_prop,calib_prop,covariate_W=False):
     X1 = D/N
     X0 = np.random.normal(scale=0.3, size=(n,p0))
 
-    #W_clr = np.apply_along_axis(clr, 1, W)
-    XW = np.hstack([W,X0])
-    X = XW if covariate_W else np.hstack([X1,X0])
+    WX = np.hstack([W,X0])
+    X = WX if covariate_W else np.hstack([X1,X0])
 
-    n_covariate = X.shape[1]
-    #beta = np.random.uniform(1,10,size=(n_covariate,1))
-    #beta = beta/beta.sum()
-    #lin = np.dot(X, beta).reshape(n,1)
-
+    n_covariate = WX.shape[1]
     beta = np.random.uniform(1,10,size=(n_covariate,1))
     beta = beta/beta.sum()
-    nonlin = np.sin(3*X[:,0])*beta[0]+np.cos(2*X[:,1])*beta[1]+0.1*X[:,2]**2*beta[2]
-    lin = np.dot(X[:,3:], beta[3:])
+    nonlin = np.sin(3*W[:,0])*beta[0]+np.cos(2*W[:,1])*beta[1]+0.1*W[:,2]**2*beta[2]
+    for j in range(3, K):
+        nonlin += np.sin(2 * np.pi * W[:, j]) * beta[j]
+    lin = np.dot(X0, beta[K:])
 
     scale_1 = 0.05
     scale_2 = 0.05
@@ -110,16 +110,60 @@ def generate_data(N,n,p,p0,K,test_prop,calib_prop,covariate_W=False):
     Y = nonlin.reshape(n,1) + lin + noise.reshape(n,1)
     #Y = lin + noise.reshape(n,1)
 
-    X_train, X_temp, Y_train, Y_temp = train_test_split(X, Y, test_size=test_prop+calib_prop, random_state=127)
+    ind = np.arange(len(X))
+    train_idx, temp_idx = train_test_split(ind, test_size=test_prop+calib_prop, random_state=127)
     adjusted_test_prob = test_prop/(test_prop+calib_prop)
-    X_calib, X_test, Y_calib, Y_test = train_test_split(X_temp, Y_temp, test_size=adjusted_test_prob, random_state=127)
+    calib_idx, test_idx = train_test_split(temp_idx, test_size=adjusted_test_prob, random_state=127)
 
-    return X_train, X_calib, X_test, Y_train, Y_calib, Y_test, D, W, A
+    X_train, Y_train = X[train_idx], Y[train_idx]
+    X_calib, Y_calib = X[calib_idx], Y[calib_idx]
+    X_test, Y_test = X[test_idx], Y[test_idx]
+
+    return X_train, X_calib, X_test, Y_train, Y_calib, Y_test, train_idx, calib_idx, test_idx, D, W, A
 
 
-def generate_qkr(N,n,p,p0,K,test_prop,calib_prop,covariate_W):
+def generate_reg(n, p,
+                 test_prop=0.1,
+                 calib_prop=0.3):
+    X = np.random.uniform(size=(n,p))
+    beta = np.random.uniform(1,10, size = (p,1))
+    beta = beta/beta.sum()
+    nonlin = np.sin(3*X[:,0])*beta[0]+np.cos(2*X[:,1])*beta[1]+0.1*X[:,2]**2*beta[2]
+    lin = np.dot(X[:,3:], beta[3:])
+
+    noise = np.random.normal(scale = 0.05, size=(n,1))
+    Y = nonlin.reshape(n,1) + lin + noise.reshape(n,1)
+
+    ind = np.arange(len(X))
+    train_idx, temp_idx = train_test_split(ind, test_size=test_prop+calib_prop, random_state=127)
+    adjusted_test_prob = test_prop/(test_prop+calib_prop)
+    calib_idx, test_idx = train_test_split(temp_idx, test_size=adjusted_test_prob, random_state=127)
+
+    X_train, Y_train = X[train_idx], Y[train_idx]
+    X_calib, Y_calib = X[calib_idx], Y[calib_idx]
+    X_test, Y_test = X[test_idx], Y[test_idx]
+
+    # Score: residual from OLS
+    reg = LinearRegression().fit(X_train, Y_train.ravel())
+    scoresCalib = np.abs(reg.predict(X_calib) - Y_calib.ravel())
+    scoresTest =  np.abs(reg.predict(X_test) - Y_test.ravel())
+    scoreFn = lambda x, y : y - reg.predict(x)
+
+    return{
+        "Xcalib": X_calib,
+        "Xtest": X_test,
+        "Ycalib": Y_calib,
+        "Ytest": Y_test,
+        "scoresCalib": scoresCalib,
+        "scoresTest": scoresTest
+    }
+
+def generate_qkm(N,n,p,p0,K,
+                 test_prop=0.1,
+                 calib_prop=0.3,
+                 covariate_W=True):
     #np.random.seed(100)
-    X_train, X_calib, X_test, Y_train, Y_calib, Y_test, D, W, A = generate_data(N,
+    X_train, X_calib, X_test, Y_train, Y_calib, Y_test, train_idx, calib_idx, test_idx, D, W, A = generate_data(N,
                                                                             n,p,p0,K,test_prop,
                                                                             calib_prop, 
                                                                             covariate_W)
@@ -135,21 +179,90 @@ def generate_qkr(N,n,p,p0,K,test_prop,calib_prop,covariate_W):
     scoreFn = lambda x, y : y - reg.predict(x)
 
     # Covariate for Phi, dim: n x K-1
-    phiCalib = X_calib[:, :K-1]
-    phiTest = X_test[:, :K-1]
-    phiFn = lambda x : x[:, :K-1]
+    phiCalib = X_calib[:, :K]
+    phiTest = X_test[:, :K]
+    phiFn = lambda x : x[:, :K]
 
     return{
-        "Xcalib": X_calib_clr,
-        "Xtest": X_test_clr,
+        "Xcalib": X_calib,
+        "Xtest": X_test, 
+        "Xcalib_clr": X_calib_clr,
+        "Xtest_clr": X_test_clr,
         "Ycalib": Y_calib,
         "Ytest": Y_test,
         "scoresCalib": scoresCalib,
         "scoresTest": scoresTest,
         "phiCalib": phiCalib,
         "phiTest": phiTest,
-        "Y_train": Y_train,
-        "Y_test": Y_test,
+        "train_idx": train_idx,
+        "calib_idx": calib_idx,
+        "test_idx": test_idx,
+        "D": D,
+        "W":W,
+        "A":A
+    }
+
+
+def generate_qkmTM(N,n,p,p0,K,
+                 test_prop=0.1,
+                 calib_prop=0.3,
+                 covariate_W=False):
+    #np.random.seed(100)
+    X_train, X_calib, X_test, Y_train, Y_calib, Y_test, train_idx, calib_idx, test_idx, D, W, A = generate_data(N,
+                                                                            n,p,p0,K,test_prop,
+                                                                            calib_prop, 
+                                                                            covariate_W)
+    
+    # Run topic model
+    freq_train = X_train[:,:p]
+    W_train, A_train = run_plsi(freq_train, K)
+    WX0_train = np.hstack([W_train, X_train[:,p:]])
+
+    freq_calib = X_calib[:,:p]
+    W_calib, A_calib = run_plsi(freq_calib, K)
+    P_calib = get_component_mapping(A_calib.T, A_train.T)
+    W_calib_aligned = W_calib @ P_calib.T
+    WX0_calib = np.hstack([W_calib_aligned, X_calib[:,p:]])
+
+    freq_test = X_test[:,:p]
+    W_test, A_test = run_plsi(freq_test, K)
+    P_test = get_component_mapping(A_test.T, A_train.T)
+    W_test_aligned = W_test @ P_test.T
+    WX0_test = np.hstack([W_test_aligned, X_test[:,p:]])
+
+    # Covariate for kernel: [clr(W), X0], dim: n x K+p0
+    X_train_clr = clr_then_stack(WX0_train, K,p0)
+    X_calib_clr = clr_then_stack(WX0_calib, K, p0)
+    X_test_clr = clr_then_stack(WX0_test, K, p0)
+
+    # ScoreTM: residual from OLS with estimated W
+    reg = LinearRegression().fit(X_train_clr, Y_train.ravel())
+    scoresTMCalib = np.abs(reg.predict(X_calib_clr) - Y_calib.ravel())
+    scoresTMTest =  np.abs(reg.predict(X_test_clr) - Y_test.ravel())
+
+    # Score: residual from OLS
+    reg = LinearRegression().fit(X_train, Y_train.ravel())
+    scoresCalib = np.abs(reg.predict(X_calib) - Y_calib.ravel())
+    scoresTest =  np.abs(reg.predict(X_test) - Y_test.ravel())
+
+    # Covariate for Phi, dim: n x K-1
+    phiCalib = W_calib_aligned[:, :K-1]
+    phiTest = W_test_aligned[:, :K-1]
+
+    return{
+        "Xcalib": X_calib_clr,
+        "Xtest": X_test_clr,
+        "Ycalib": Y_calib,
+        "Ytest": Y_test,
+        "scoresTMCalib": scoresTMCalib,
+        "scoresTMTest": scoresTMTest,
+        "scoresCalib": scoresCalib,
+        "scoresTest": scoresTest,        
+        "phiCalib": phiCalib,
+        "phiTest": phiTest,
+        "train_idx": train_idx,
+        "calib_idx": calib_idx,
+        "test_idx": test_idx,
         "D": D,
         "W":W,
         "A":A
