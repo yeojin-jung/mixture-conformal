@@ -3,27 +3,26 @@
 ### Author: Yeo Jin Jung (yeojinjung@uchicago.edu)
 ### Date:    03/22/2025
 #######################################################################
+
 import numpy as np
-import cvxpy as cp
+from scipy.linalg import qr, solve
 from sklearn.metrics.pairwise import rbf_kernel
 from scipy.linalg import null_space
 from quantileKernelMixCp.generate_qkm import kernel, pinball
 
-def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
+def qKM_noPhi(X, y, a, max_steps, gamma, eps1=1e-04, eps2=1e-02):
     n, m = X.shape
     maxvars = min(m, n - 1)
 
     # Initialization
-    ini = qKMIni(X, y, a, PhiX, gamma)
+    ini = qKMIni_noPhi(X, y, a, gamma)
     indE, indL, indR = np.array(ini["indE"]), np.array(ini["indL"]), np.array(ini["indR"])
-    u, u1, u0 = ini["u"], ini["u1"], ini["u0"]
+    u, u0 = ini["u"], ini["u0"]
 
     # Fixed components
     K = kernel(X, X, gamma)
-    p = PhiX.shape[1]
 
     # Parameters we keep track of
-    beta1 = np.zeros((max_steps + 1, p))
     beta0 = np.zeros(max_steps + 1)
     theta = np.zeros((max_steps + 1, n))
     Cgacv = np.zeros(max_steps + 1)
@@ -33,11 +32,9 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
     lambda_vals = np.zeros(max_steps + 1)
     Elbow_list = [None] * (max_steps + 1)
 
-    beta0[0], beta1[0,:], theta[0,:], lambda_vals[0] = ini["beta0"], ini["beta1"], ini["theta"], ini["lambda"]
-    #print(beta0[0])
-    #print(beta1[0,:])
+    beta0[0], theta[0,:], lambda_vals[0] = ini["beta0"], ini["theta"], ini["lambda"]
     Elbow_list[0] = None
-    fit[0, :] = beta0[0] + PhiX @ beta1[0,:] + 1/lambda_vals[0]*K @ theta[0,]
+    fit[0, :] = beta0[0] + 1/lambda_vals[0]*K @ theta[0,]
     checkf[0] = pinball(fit[0, :], y, a)
     Cgacv[0] = checkf[0] / (n - len(indE))
     Csic[0] = np.log(checkf[0] / n) + (np.log(n) / (2 * n)) * len(indE)
@@ -55,12 +52,17 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
         # delta1_ = lambda[k]-lambda[k-1]
         lambd = lambda_vals[k-1]
         theta[k,:] = theta[k-1,:]
-        notindE = np.setdiff1d(range(n), indE)
-        gam = u0 + PhiX[notindE,:] @ u1 + K[np.ix_(notindE, indE)] @ u
-        fitRL =  beta0[k-1] + PhiX[notindE,:] @ beta1[k-1, :] + 1/lambd * K[notindE,:] @ theta[k-1,]
+
+        mask_E = np.zeros(n, dtype=bool)
+        mask_E[indE] = True
+        notindE = np.nonzero(~mask_E)[0]
+        
+        gam = u0 + K[np.ix_(notindE,indE)] @ u
+        fitRL =  beta0[k-1] + 1/lambd * K[notindE,:] @ theta[k-1,]
+        #fk = -residual[notindE]+ y[notindE]
         delta1_vec = (fitRL - gam)/(y[notindE] - gam)
 
-        if np.all(delta1_vec >=1):
+        if np.all(delta1_vec >1):
             delta1_ = np.inf
         else:
             # Determine hitting point
@@ -82,14 +84,16 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
                     tmpR1 = np.delete(indR, np.where(indR == istar1))
 
                 # Solve next linear system
-                block1 = np.hstack([np.ones((len(tmpE1),1)),PhiX[tmpE1,:], K[np.ix_(tmpE1,tmpE1)]])
-                block2 = np.hstack([np.zeros(p+1), np.ones(len(tmpE1))]).reshape(1,-1)
-                block3 = np.hstack([np.zeros((p, p+1)), PhiX[tmpE1].T])      
-                C = np.vstack([block2, block3])
-                N = null_space(C)
-                A_reduced = block1 @ N
-                w, _, _, _ = np.linalg.lstsq(A_reduced, y[tmpE1], rcond=None)
-                tmpu1 = N @ w
+                probdim = len(tmpE1) + 1
+                block1 = np.hstack([np.ones((len(tmpE1),1)), K[np.ix_(tmpE1,tmpE1)]])
+                block2 = np.hstack([0, np.ones(len(tmpE1))]).reshape(1,-1)
+                tmpA1 = np.vstack([block1, block2])
+                tmpY = np.hstack([y[tmpE1],0])
+                q, r = qr(tmpA1, mode='economic')
+                if np.linalg.matrix_rank(r) < probdim:
+                    delta1_ = np.inf
+                else:
+                    tmpu1 = solve(r, q.T @ tmpY)
 
         ### Event 2: Check if a point leaves Elbow
         # deltaL = lambda[k+1]-lambda[k] when theta = a
@@ -125,14 +129,16 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
                     tmpR2 = np.append(indR, istar2)
 
                 # Solve next linear system
-                block1 = np.hstack([np.ones((len(tmpE2),1)),PhiX[tmpE2,:], K[np.ix_(tmpE2,tmpE2)]])
-                block2 = np.hstack([np.zeros(p+1), np.ones(len(tmpE2))]).reshape(1,-1)
-                block3 = np.hstack([np.zeros((p, p+1)), PhiX[tmpE2].T])      
-                C = np.vstack([block2, block3])
-                N = null_space(C)
-                A_reduced = block1 @ N
-                w, _, _, _ = np.linalg.lstsq(A_reduced, y[tmpE2], rcond=None)
-                tmpu2 = N @ w
+                probdim = len(tmpE2) + 1
+                block1 = np.hstack([np.ones((len(tmpE2),1)), K[np.ix_(tmpE2,tmpE2)]])
+                block2 = np.hstack([0, np.ones(len(tmpE2))])
+                tmpA2 = np.vstack([block1, block2])
+                tmpY = np.hstack([y[tmpE2],0])
+                q, r = qr(tmpA2, mode='economic')
+                if np.linalg.matrix_rank(r) < probdim:
+                    delta2_ = np.inf
+                else:
+                    tmpu2 = solve(r, q.T @ tmpY)
         else:
             delta2_ = np.inf
 
@@ -155,12 +161,11 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
             break
         delta_r = 1+delta/lambd
         beta0[k] = 1/delta_r * beta0[k-1] + u0*(1-1/delta_r)
-        beta1[k,:] = 1/delta_r * beta1[k-1,:] + u1*(1-1/delta_r)
-        theta[k,indE] = theta[k-1,indE] + delta*u
+        theta[k,indE] = theta[k-1,indE] + u*delta
         Elbow_list[k] = indE
 
         ### Compute SIC and GACV
-        fit[k, :] = beta0[k] + PhiX @ beta1[k, :] + 1/lambda_vals[k]* K @ theta[k,]
+        fit[k, :] = beta0[k] + 1/lambda_vals[k]* K @ theta[k,]
         pb_loss = pinball(fit[k, :], y, a)
         Cgacv[k] = pb_loss / (n - len(indE))
         Csic[k] = np.log(pb_loss / n) + (np.log(n) / (2 * n)) * len(indE)
@@ -168,26 +173,22 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
 
         if delta == delta1_: # a point hits elbow
             u0 = tmpu1[0]
-            u1 = tmpu1[1:p+1]
-            u = tmpu1[p+1:]
+            u = tmpu1[1:]
             indE, indL, indR = tmpE1, tmpL1, tmpR1
             #print(f"Observation {istar1} from {setstar1} hits elbow.")
         else: # a point leaves elbow
             u0 = tmpu2[0]
-            u1 = tmpu2[1:p+1]
-            u = tmpu2[p+1:]
+            u = tmpu2[1:]
             indE, indL, indR = tmpE2, tmpL2, tmpR2
             #print(f"Observation {istar2} leaves elbow and joins {setstar2}.")
-            
-    #print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}")
-
+    
     #opt = np.argmin(Csic)
-    #lambd_opt = lambda_vals[opt] 
+    #lambd_opt = lambda_vals[opt]
+
     #print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}, Lambda: {lambd_opt}")
 
     result = {
         "beta0": beta0[:k+1],
-        "beta": beta1[:k+1,:],
         "theta": theta[:k+1,:],
         "Elbow": Elbow_list[:k+1],
         "lambda": lambda_vals[:k+1],
@@ -196,12 +197,12 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
         "Cgacv": Cgacv[:k+1],
         "indE": indE,
         "indR": indR,
-        "indL": indL
+        "indL": indL,
     }
     return result
 
 
-def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
+def qKMIni_noPhi(X, y, a, gamma):
     n, m = X.shape
     yr = np.sort(y)
     quant = yr[int(np.floor(n * a))]
@@ -209,18 +210,16 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
 
     # Fixed components
     K = kernel(X, X, gamma)
-    p = PhiX.shape[1]
 
     # Initialize sets
     indE = [istar]
     indR = np.where(y > y[istar])[0].tolist()
     indL = np.where(y < y[istar])[0].tolist()
     
-    # We just initialize beta1 as 1's
+    # For index, we need beta0+Phi(x_istar)^T*beta=quant
     theta = np.zeros(n)
     theta[indL] = -(1-a)
     theta[indR] = a
-    beta1 = np.ones(p)
 
     # Find next hitting point
     theta_star = (1-a)*len(indL)-a*len(indR)
@@ -228,13 +227,12 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
     notindE = np.setdiff1d(range(n), indE)
     gam = a*K[np.ix_(notindE, notindE)].sum(axis=1)-K[np.ix_(notindE, indL)].sum(axis=1)+theta_star*K[notindE, istar]
     gam_star = a*K[istar, notindE].sum()-K[istar, indL].sum()+theta_star*K[istar,istar]
-    denoms = y[notindE]-PhiX[notindE,:]@ beta1-y[istar]+PhiX[istar,:]@ beta1
+    denoms = y[notindE]-y[istar]
     lambdas = (gam-gam_star)/denoms
     lambd = np.max(lambdas)
-    assert len(lambdas) == len(notindE)
     istar1 = notindE[np.argmax(lambdas)]
 
-    beta0 = y[istar]-1/lambd * K[istar,:] @ theta - PhiX[istar,:] @ beta1
+    beta0 = y[istar]-1/lambd*K[istar,:] @ theta
 
     # Solve next linear system
     tmpE = indE+[istar1]
@@ -244,27 +242,25 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
     else:
         tmpR.remove(istar1)
     
-    block1 = np.hstack([np.ones((len(tmpE),1)),PhiX[tmpE,:], K[np.ix_(tmpE,tmpE)]])
-    block2 = np.hstack([np.zeros(p+1), np.ones(len(tmpE))]).reshape(1,-1)
-    block3 = np.hstack([np.zeros((p, p+1)), PhiX[tmpE].T])      
-    C = np.vstack([block2, block3])
-    N = null_space(C)
-    A_reduced = block1 @ N
-    w, _, _, _ = np.linalg.lstsq(A_reduced, y[tmpE], rcond=None)
-    tmpu = N @ w
+    probdim = len(tmpE) + 1
+    block1 = np.hstack([np.ones((len(tmpE),1)), K[np.ix_(tmpE,tmpE)]])
+    block2 = np.hstack([0, np.ones(len(tmpE))]).reshape(1,-1)
+    tmpA = np.vstack([block1, block2])
+    tmpY = np.hstack([y[tmpE], 0])
+    q, r = qr(tmpA, mode='economic')
+    tmpu = solve(r, q.T @ tmpY)
+    if np.linalg.matrix_rank(r) < probdim:
+        print("System not solvable.")
 
     # Update parameters
     u0 = tmpu[0]
-    u1 = tmpu[1:p+1]
-    u = tmpu[p+1:]
+    u = tmpu[1:]
 
     return {
         "theta": theta,
-        "beta1": beta1,
         "beta0": beta0,
         "u": u,
         "u0": u0,
-        "u1": u1,
         "lambda": lambd,
         "indE": tmpE,
         "indR": tmpR,
@@ -272,14 +268,13 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
     }
 
 
-def qKMPredict(X, y, a, PhiX, x_test, Phi_test,
+def qKMPredict_noPhi(X, y, a, x_test,
                  max_steps, Smin, Smax, 
-                 max_iter=200, gamma=1, eps1=1e-04, eps2=1e-02, tol=1e-3):
+                 max_iter=200, gamma=1, eps1=1e-4, eps2=1e-02, tol=1e-3):
     lambdas = []
     iter_count = 0
 
     x_val = x_test.reshape(1, -1)
-    Phi_val = Phi_test.reshape(1, -1)
     
     # Binary search to find the maximal S with S < fit(S)
     while (Smax - Smin) > tol and iter_count < max_iter:
@@ -287,9 +282,8 @@ def qKMPredict(X, y, a, PhiX, x_test, Phi_test,
 
         X_new = np.vstack([X, x_val])
         y_new = np.append(y, Smed)
-        Phi_new = np.vstack([PhiX, Phi_val])
         
-        res = qKM(X_new, y_new.ravel(), a, Phi_new, max_steps, gamma, eps1, eps2)
+        res = qKM_noPhi(X_new, y_new.ravel(), a, max_steps, gamma, eps1, eps2)
         opt = np.argmin(res['Csic'])
         score_diff = res['fit'][opt][-1] - Smed
         
