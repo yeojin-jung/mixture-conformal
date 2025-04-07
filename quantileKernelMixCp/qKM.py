@@ -9,7 +9,7 @@ from sklearn.metrics.pairwise import rbf_kernel
 from scipy.linalg import null_space
 from quantileKernelMixCp.generate_qkm import kernel, pinball
 
-def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
+def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
     n, m = X.shape
     maxvars = min(m, n - 1)
 
@@ -17,6 +17,10 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
     ini = qKMIni(X, y, a, PhiX, gamma)
     indE, indL, indR = np.array(ini["indE"]), np.array(ini["indL"]), np.array(ini["indR"])
     u, u1, u0 = ini["u"], ini["u1"], ini["u0"]
+    #print(ini)
+
+    if "max_steps" not in globals():
+        max_steps = n * maxvars
 
     # Fixed components
     K = kernel(X, X, gamma)
@@ -34,8 +38,6 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
     Elbow_list = [None] * (max_steps + 1)
 
     beta0[0], beta1[0,:], theta[0,:], lambda_vals[0] = ini["beta0"], ini["beta1"], ini["theta"], ini["lambda"]
-    #print(beta0[0])
-    #print(beta1[0,:])
     Elbow_list[0] = None
     fit[0, :] = beta0[0] + PhiX @ beta1[0,:] + 1/lambda_vals[0]*K @ theta[0,]
     checkf[0] = pinball(fit[0, :], y, a)
@@ -60,36 +62,33 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
         fitRL =  beta0[k-1] + PhiX[notindE,:] @ beta1[k-1, :] + 1/lambd * K[notindE,:] @ theta[k-1,]
         delta1_vec = (fitRL - gam)/(y[notindE] - gam)
 
-        if np.all(delta1_vec >=1):
+        if np.all(delta1_vec >0):
             delta1_ = np.inf
         else:
             # Determine hitting point
-            pos = delta1_vec[delta1_vec <1]
-            if pos.size == 0:
-                delta1_ = np.inf
+            pos = delta1_vec[delta1_vec <1-eps1]
+            tmpind = notindE[delta1_vec <1-eps1]
+            istar1 = tmpind[np.argmax(pos)]
+            delta1_ = lambd*(np.max(pos)-1)
+
+            # Temporarily move point
+            tmpE1 = np.append(indE, istar1)
+            tmpL1, tmpR1 = indL.copy(), indR.copy()
+            setstar1 = 'left' if istar1 in indL else 'right'
+            if setstar1 == 'left':
+                tmpL1 = np.delete(indL, np.where(indL == istar1))
             else:
-                tmpind = notindE[delta1_vec <1]
-                istar1 = tmpind[np.argmax(pos)]
-                delta1_ = lambd*(np.max(pos)-1)
+                tmpR1 = np.delete(indR, np.where(indR == istar1))
 
-                # Temporarily move point
-                tmpE1 = np.append(indE, istar1)
-                tmpL1, tmpR1 = indL.copy(), indR.copy()
-                setstar1 = 'left' if istar1 in indL else 'right'
-                if setstar1 == 'left':
-                    tmpL1 = np.delete(indL, np.where(indL == istar1))
-                else:
-                    tmpR1 = np.delete(indR, np.where(indR == istar1))
-
-                # Solve next linear system
-                block1 = np.hstack([np.ones((len(tmpE1),1)),PhiX[tmpE1,:], K[np.ix_(tmpE1,tmpE1)]])
-                block2 = np.hstack([np.zeros(p+1), np.ones(len(tmpE1))]).reshape(1,-1)
-                block3 = np.hstack([np.zeros((p, p+1)), PhiX[tmpE1].T])      
-                C = np.vstack([block2, block3])
-                N = null_space(C)
-                A_reduced = block1 @ N
-                w, _, _, _ = np.linalg.lstsq(A_reduced, y[tmpE1], rcond=None)
-                tmpu1 = N @ w
+            # Solve next linear system
+            block1 = np.hstack([np.ones((len(tmpE1),1)),PhiX[tmpE1,:], K[np.ix_(tmpE1,tmpE1)]])
+            block2 = np.hstack([np.zeros(p+1), np.ones(len(tmpE1))]).reshape(1,-1)
+            block3 = np.hstack([np.zeros((p, p+1)), PhiX[tmpE1].T])      
+            C = np.vstack([block2, block3])
+            N = null_space(C)
+            A_reduced = block1 @ N
+            w, _, _, _ = np.linalg.lstsq(A_reduced, y[tmpE1], rcond=None)
+            tmpu1 = N @ w
 
         ### Event 2: Check if a point leaves Elbow
         # deltaL = lambda[k+1]-lambda[k] when theta = a
@@ -135,7 +134,6 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
                 tmpu2 = N @ w
         else:
             delta2_ = np.inf
-
         ### Which event happened?
         # Terminate if all step size > 0
         delta_list = np.array([delta1_, delta2_])
@@ -147,11 +145,13 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
 
         ### Update parameters
         delta = np.max(delta_list[delta_list<0])
+        #lambda_vals[k] = lambda_vals[k-1] 
         lambda_vals[k] = max([lambda_vals[k-1] + delta,0])
         if lambda_vals[k] == 0:
             break
-        if lambda_vals[k-1] - lambda_vals[k] < eps2:
-            #print("Descent too small. Stopping.")
+        #if lambda_vals[k-1] - lambda_vals[k] < eps2:
+        if lambda_vals[k] < eps2:
+            print("Descent too small. Stopping.")
             break
         delta_r = 1+delta/lambd
         beta0[k] = 1/delta_r * beta0[k-1] + u0*(1-1/delta_r)
@@ -178,12 +178,9 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
             u = tmpu2[p+1:]
             indE, indL, indR = tmpE2, tmpL2, tmpR2
             #print(f"Observation {istar2} leaves elbow and joins {setstar2}.")
+    lambda_opt = lambda_vals[np.argmin(Csic)]
             
-    #print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}")
-
-    #opt = np.argmin(Csic)
-    #lambd_opt = lambda_vals[opt] 
-    #print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}, Lambda: {lambd_opt}")
+    print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}, Lambda: {lambda_opt}")
 
     result = {
         "beta0": beta0[:k+1],
@@ -194,6 +191,7 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1=1e-04, eps2=1e-02):
         "fit": fit[:k+1],
         "Csic": Csic[:k+1],
         "Cgacv": Cgacv[:k+1],
+        "checkf": checkf[:k+1],
         "indE": indE,
         "indR": indR,
         "indL": indL
@@ -220,7 +218,8 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
     theta = np.zeros(n)
     theta[indL] = -(1-a)
     theta[indR] = a
-    beta1 = np.ones(p)
+    beta1 = np.zeros(p)
+    #beta1 = np.ones(p)
 
     # Find next hitting point
     theta_star = (1-a)*len(indL)-a*len(indR)
@@ -274,7 +273,7 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
 
 def qKMPredict(X, y, a, PhiX, x_test, Phi_test,
                  max_steps, Smin, Smax, 
-                 max_iter=200, gamma=1, eps1=1e-04, eps2=1e-02, tol=1e-3):
+                 max_iter=200, gamma=1, eps1=1e-4, eps2=1e-3, tol=1e-3):
     lambdas = []
     iter_count = 0
 
