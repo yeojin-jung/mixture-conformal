@@ -22,14 +22,21 @@ def clr(probs):
 
 def alr(probs):
     probs = probs.copy()
-    probs /= probs[-1]
+    # avoid division by zero
+    probs = probs + np.finfo(probs.dtype).eps
+    return np.log(probs[:-1] / probs[-1])
     #continuous = np.log(probs + np.finfo(probs.dtype).eps)
-    return probs[:-1]
 
 def clr_then_stack(data, K, p0):
     X1_clr = np.apply_along_axis(clr, 1, data[:,:K])
     X_clr = np.hstack([X1_clr,data[:,K:K+p0]])
     return X_clr
+
+def alr_then_stack(data, K, p0):
+    X1_alr = np.apply_along_axis(alr, 1, data[:,:K])
+    X_alr = np.hstack([X1_alr,data[:,K:K+p0]])
+    return X_alr
+
 
 def get_initial_centers(val, centers):
     quantiles = []
@@ -117,7 +124,7 @@ def generate_data(N,n,p,p0,K,test_prop,calib_prop,covariate_W=False):
     return X_train, X_calib, X_test, Y_train, Y_calib, Y_test, D, W, A
 
 
-def generate_qkr(N,n,p,p0,K,test_prop,calib_prop,covariate_W):
+def generate_qkr(N,n,p,p0,K,test_prop,calib_prop,covariate_W, PhiFn=None, scoreFn=None):
     #np.random.seed(100)
     X_train, X_calib, X_test, Y_train, Y_calib, Y_test, D, W, A = generate_data(N,
                                                                             n,p,p0,K,test_prop,
@@ -132,12 +139,15 @@ def generate_qkr(N,n,p,p0,K,test_prop,calib_prop,covariate_W):
     reg = LinearRegression().fit(X_train_clr, Y_train.ravel())
     scoresCalib = np.abs(reg.predict(X_calib_clr) - Y_calib.ravel())
     scoresTest =  np.abs(reg.predict(X_test_clr) - Y_test.ravel())
-    scoreFn = lambda x, y : y - reg.predict(x)
+    if scoreFn is None:
+        scoreFn = lambda x, y : y - reg.predict(x)
 
     # Covariate for Phi, dim: n x K-1
     phiCalib = X_calib[:, :K-1]
     phiTest = X_test[:, :K-1]
-    phiFn = lambda x : x[:, :K-1]
+    if PhiFn is None:
+        phiFn = lambda x : x[:, :K-1]
+    #phiFn = lambda x : x[:, :K-1]
 
     return{
         "Xcalib": X_calib_clr,
