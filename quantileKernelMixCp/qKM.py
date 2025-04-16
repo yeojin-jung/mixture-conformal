@@ -5,22 +5,18 @@
 #######################################################################
 import numpy as np
 import cvxpy as cp
-from sklearn.metrics.pairwise import rbf_kernel
 from scipy.linalg import null_space
-from quantileKernelMixCp.generate_qkm import kernel, pinball
+from quantileKernelMixCp.utils import kernel, pinball
 
-def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
+def qkm(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
     n, m = X.shape
     maxvars = min(m, n - 1)
 
     # Initialization
-    ini = qKMIni(X, y, a, PhiX, gamma)
+    ini = qkmIni(X, y, a, PhiX, gamma)
     indE, indL, indR = np.array(ini["indE"]), np.array(ini["indL"]), np.array(ini["indR"])
     u, u1, u0 = ini["u"], ini["u1"], ini["u0"]
     #print(ini)
-
-    if "max_steps" not in globals():
-        max_steps = n * maxvars
 
     # Fixed components
     K = kernel(X, X, gamma)
@@ -149,9 +145,9 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
         lambda_vals[k] = max([lambda_vals[k-1] + delta,0])
         if lambda_vals[k] == 0:
             break
-        #if lambda_vals[k-1] - lambda_vals[k] < eps2:
-        if lambda_vals[k] < eps2:
-            print("Descent too small. Stopping.")
+        if np.abs(lambda_vals[k-1] - lambda_vals[k]) < eps2:
+        #if lambda_vals[k] < eps2:
+            #print("Descent too small. Stopping.")
             break
         delta_r = 1+delta/lambd
         beta0[k] = 1/delta_r * beta0[k-1] + u0*(1-1/delta_r)
@@ -180,18 +176,18 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
             #print(f"Observation {istar2} leaves elbow and joins {setstar2}.")
     lambda_opt = lambda_vals[np.argmin(Csic)]
             
-    print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}, Lambda: {lambda_opt}")
+    #print(f"Number of iterations run: {k+1}, Size of elbow: {len(indE)}, Lambda: {lambda_opt}")
 
     result = {
-        "beta0": beta0[:k+1],
-        "beta": beta1[:k+1,:],
-        "theta": theta[:k+1,:],
-        "Elbow": Elbow_list[:k+1],
-        "lambda": lambda_vals[:k+1],
-        "fit": fit[:k+1],
-        "Csic": Csic[:k+1],
-        "Cgacv": Cgacv[:k+1],
-        "checkf": checkf[:k+1],
+        "beta0": beta0[:k],
+        "beta": beta1[:k,:],
+        "theta": theta[:k,:],
+        "Elbow": Elbow_list[:k],
+        "lambda": lambda_vals[:k],
+        "fit": fit[:k],
+        "Csic": Csic[:k],
+        "Cgacv": Cgacv[:k],
+        "checkf": checkf[:k],
         "indE": indE,
         "indR": indR,
         "indL": indL
@@ -199,7 +195,7 @@ def qKM(X, y, a, PhiX, max_steps, gamma, eps1, eps2):
     return result
 
 
-def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
+def qkmIni(X, y, a, PhiX, gamma, eps=1e-10):
     n, m = X.shape
     yr = np.sort(y)
     quant = yr[int(np.floor(n * a))]
@@ -218,8 +214,8 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
     theta = np.zeros(n)
     theta[indL] = -(1-a)
     theta[indR] = a
-    beta1 = np.zeros(p)
-    #beta1 = np.ones(p)
+    #beta1 = np.zeros(p)
+    beta1 = np.ones(p)
 
     # Find next hitting point
     theta_star = (1-a)*len(indL)-a*len(indR)
@@ -269,35 +265,3 @@ def qKMIni(X, y, a, PhiX, gamma, eps=1e-10):
         "indR": tmpR,
         "indL": tmpL
     }
-
-
-def qKMPredict(X, y, a, PhiX, x_test, Phi_test,
-                 max_steps, Smin, Smax, 
-                 max_iter=200, gamma=1, eps1=1e-4, eps2=1e-3, tol=1e-3):
-    lambdas = []
-    iter_count = 0
-
-    x_val = x_test.reshape(1, -1)
-    Phi_val = Phi_test.reshape(1, -1)
-    
-    # Binary search to find the maximal S with S < fit(S)
-    while (Smax - Smin) > tol and iter_count < max_iter:
-        Smed = (Smax + Smin) / 2.0
-
-        X_new = np.vstack([X, x_val])
-        y_new = np.append(y, Smed)
-        Phi_new = np.vstack([PhiX, Phi_val])
-        
-        res = qKM(X_new, y_new.ravel(), a, Phi_new, max_steps, gamma, eps1, eps2)
-        opt = np.argmin(res['Csic'])
-        score_diff = res['fit'][opt][-1] - Smed
-        
-        if score_diff > 0:
-            Smin = Smed
-        else:
-            Smax = Smed
-        
-        lambdas.append(res['lambda'][opt])
-        iter_count += 1
-
-    return Smin, Smax, lambdas
